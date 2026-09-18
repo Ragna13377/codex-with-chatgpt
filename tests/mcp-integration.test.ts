@@ -76,7 +76,7 @@ afterAll(async () => {
 });
 
 describe("MCP tools over Streamable HTTP", () => {
-  it("lists all nine read-only tools", async () => {
+  it("lists all ten tools including the effectful Codex wake tool", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
     expect(names).toEqual([
@@ -88,9 +88,10 @@ describe("MCP tools over Streamable HTTP", () => {
       "read_file",
       "search_workspace",
       "test_status",
+      "wake_codex_hello",
       "workspace_info",
     ]);
-    // no write tools in V1
+    // No general-purpose workspace mutation or shell tools.
     for (const forbidden of ["write_file", "delete_file", "execute_shell", "git_commit", "install_package"]) {
       expect(names).not.toContain(forbidden);
     }
@@ -104,6 +105,16 @@ describe("MCP tools over Streamable HTTP", () => {
     expectToolOutputSchema(tools, "test_status", ["available", "tests", "outputAvailable", "outputId"]);
     expectToolOutputSchema(tools, "execution_summary", ["records"]);
     expectToolOutputSchema(tools, "execution_output", ["action", "items", "text"]);
+    expectToolOutputSchema(tools, "wake_codex_hello", ["success", "exitCode", "threadId", "opened", "error", "diagnostic"]);
+    const wakeTool = tools.find((tool) => tool.name === "wake_codex_hello");
+    expect(wakeTool?.description).toContain("fresh Codex thread");
+    expect(wakeTool?.description).not.toContain("most recent");
+    expect(wakeTool?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    });
   });
 
   it("documents git_diff pagination with its output field names", async () => {
