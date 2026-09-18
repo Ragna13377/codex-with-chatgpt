@@ -76,10 +76,11 @@ afterAll(async () => {
 });
 
 describe("MCP tools over Streamable HTTP", () => {
-  it("lists all ten tools including the effectful Codex wake tool", async () => {
+  it("lists all ten tools including the effectful Codex task executor", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
     expect(names).toEqual([
+      "execute_codex_task",
       "execution_output",
       "execution_summary",
       "git_diff",
@@ -88,7 +89,6 @@ describe("MCP tools over Streamable HTTP", () => {
       "read_file",
       "search_workspace",
       "test_status",
-      "wake_codex_hello",
       "workspace_info",
     ]);
     // No general-purpose workspace mutation or shell tools.
@@ -105,15 +105,32 @@ describe("MCP tools over Streamable HTTP", () => {
     expectToolOutputSchema(tools, "test_status", ["available", "tests", "outputAvailable", "outputId"]);
     expectToolOutputSchema(tools, "execution_summary", ["records"]);
     expectToolOutputSchema(tools, "execution_output", ["action", "items", "text"]);
-    expectToolOutputSchema(tools, "wake_codex_hello", ["success", "exitCode", "threadId", "opened", "error", "diagnostic"]);
-    const wakeTool = tools.find((tool) => tool.name === "wake_codex_hello");
-    expect(wakeTool?.description).toContain("fresh Codex thread");
-    expect(wakeTool?.description).not.toContain("most recent");
-    expect(wakeTool?.annotations).toMatchObject({
+    expectToolOutputSchema(
+      tools,
+      "execute_codex_task",
+      [
+        "success",
+        "exitCode",
+        "threadId",
+        "finalMessage",
+        "error",
+        "diagnostic",
+      ]
+    );
+
+    const executeTool = tools.find(
+      (tool) => tool.name === "execute_codex_task"
+    );
+
+    expect(executeTool?.description).toContain(
+      "fresh Codex task"
+    );
+
+    expect(executeTool?.annotations).toMatchObject({
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: false,
-      openWorldHint: false,
+      openWorldHint: true,
     });
   });
 

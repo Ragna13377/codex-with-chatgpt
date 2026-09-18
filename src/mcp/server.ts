@@ -6,7 +6,7 @@ import { searchWorkspace } from "../workspace/search.js";
 import { gitDiff, gitInfo, gitStatus, type DiffMode } from "../workspace/git.js";
 import { executionRecordSchema, latestExecutionRecord, readExecutionRecords } from "../execution/records.js";
 import { listExecutionOutputs, readExecutionOutput } from "../execution/output.js";
-import { wakeCodexHello } from "../control/wake-codex.js";
+import { executeCodexTask } from "../control/codex-task-executor.js";
 import type { Logger } from "../logger/index.js";
 import { PRODUCT_NAME, VERSION } from "../version.js";
 
@@ -180,11 +180,11 @@ const executionOutputOutputSchema = {
   text: z.string().optional().describe("Sanitized command output returned by the read operation"),
 };
 
-const wakeCodexHelloOutputSchema = {
+const executeCodexTaskOutputSchema = {
   success: z.boolean(),
   exitCode: z.number().int().nullable(),
   threadId: z.string().optional(),
-  opened: z.boolean().optional(),
+  finalMessage: z.string().optional(),
   error: z.string().optional(),
   diagnostic: z.string().optional(),
 };
@@ -482,18 +482,42 @@ export function createMcpServer(ctx: McpContext): McpServer {
   );
 
   server.registerTool(
-    "wake_codex_hello",
+    "execute_codex_task",
     {
-      title: "Open a fresh Codex hello thread",
+      title: "Execute Codex task",
       description:
-        "Start a fresh Codex thread in this workspace with the fixed message 'hello', wait for it to finish, and open it in Codex Desktop.",
-      inputSchema: {},
-      outputSchema: wakeCodexHelloOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+        "Start a fresh Codex task in this workspace using the provided instruction, wait for it to finish, and return the final Codex response.",
+      inputSchema: {
+        instruction: z
+          .string()
+          .min(1)
+          .max(8000)
+          .refine(
+            (value) => value.trim().length > 0,
+            "instruction must not be blank"
+          )
+          .describe(
+            "Complete bounded instruction for a fresh Codex worker."
+          ),
+      },
+      outputSchema: executeCodexTaskOutputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
     },
-    async () => {
-      const result = await wakeCodexHello(workspace.root);
-      return { ...okStructured(result), ...(result.success ? {} : { isError: true }) };
+    async (args) => {
+      const result = await executeCodexTask(
+        workspace.root,
+        args.instruction
+      );
+
+      return {
+        ...okStructured(result),
+        ...(result.success ? {} : { isError: true }),
+      };
     }
   );
 
