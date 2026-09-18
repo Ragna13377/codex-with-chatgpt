@@ -6,6 +6,7 @@ import { searchWorkspace } from "../workspace/search.js";
 import { gitDiff, gitInfo, gitStatus, type DiffMode } from "../workspace/git.js";
 import { executionRecordSchema, latestExecutionRecord, readExecutionRecords } from "../execution/records.js";
 import { listExecutionOutputs, readExecutionOutput } from "../execution/output.js";
+import { wakeCodexHello } from "../control/wake-codex.js";
 import type { Logger } from "../logger/index.js";
 import { PRODUCT_NAME, VERSION } from "../version.js";
 
@@ -177,6 +178,12 @@ const executionOutputOutputSchema = {
   timestamp: z.string().optional(),
   truncated: z.boolean().optional(),
   text: z.string().optional().describe("Sanitized command output returned by the read operation"),
+};
+
+const wakeCodexHelloOutputSchema = {
+  success: z.boolean(),
+  exitCode: z.number().int().nullable(),
+  error: z.string().optional(),
 };
 
 export interface McpContext {
@@ -468,6 +475,21 @@ export function createMcpServer(ctx: McpContext): McpServer {
         truncated: result.meta.truncated,
         text: result.text,
       });
+    }
+  );
+
+  server.registerTool(
+    "wake_codex_hello",
+    {
+      title: "Wake Codex with hello",
+      description: "Start a new turn in the most recent Codex thread for this workspace with the fixed message 'hello'.",
+      inputSchema: {},
+      outputSchema: wakeCodexHelloOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async () => {
+      const result = await wakeCodexHello(workspace.root);
+      return { ...okStructured(result), ...(result.success ? {} : { isError: true }) };
     }
   );
 
