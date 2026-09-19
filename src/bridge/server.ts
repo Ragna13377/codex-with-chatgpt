@@ -16,6 +16,8 @@ import { Logger, nullLogger } from "../logger/index.js";
 import { DEFAULT_HOST, DEFAULT_PORT } from "../config/paths.js";
 import { SERVICE_NAME, VERSION } from "../version.js";
 import { writeRuntimeState, clearRuntimeState, type RuntimeState } from "./runtime.js";
+import { RunManager } from "../orchestration/run-manager.js";
+import { arithmeticMockTaskRunner } from "../orchestration/mock-task-runner.js";
 
 function tunnelForWorkspace(workspaceId: string, logger: Logger): TunnelProvider {
   const binding = namedTunnelBinding(readTunnelState(workspaceId));
@@ -105,6 +107,11 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
     return `${proto}://${hostHeader}`;
   };
 
+  const runManager =
+    new RunManager(
+      arithmeticMockTaskRunner
+    );
+
   // ---- Health (public but minimal) ---------------------------------------
 
   app.get("/health", (_req, res) => {
@@ -125,7 +132,7 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
 
   // ---- MCP endpoint (bearer-protected) --------------------------------------
 
-  const mcpHandler = createMcpHttpHandler(() => createMcpServer({ workspace, logger }), logger);
+  const mcpHandler = createMcpHttpHandler(() => createMcpServer({ workspace, logger, runManager }), logger);
   app.all(
     "/mcp",
     express.json({ limit: "8mb" }),

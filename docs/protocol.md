@@ -1,281 +1,234 @@
-# C2C Agent Protocol
+# C2C Orchestration Protocol
 
-Control plane: Computer Use (tiny structured messages typed into the ChatGPT UI).
-Data plane: MCP (ChatGPT pulls files, diffs, search results itself).
+ChatGPT is the orchestrator.
+C2C is the deterministic control plane.
+Codex workers execute one bounded task at a time.
 
-Never mix the two: control messages carry state, never content.
+## Responsibilities
 
-## States
+### ChatGPT
 
-```
-INIT → PLAN → EXECUTING → EXECUTED → REVIEW → PLAN | DONE | BLOCKED | ERROR
-```
+ChatGPT owns:
 
-| State | Sender | Meaning |
-| --- | --- | --- |
-| INIT | Codex | New task; asks ChatGPT to inspect + plan |
-| PLAN | ChatGPT | Executable plan for the next iteration |
-| EXECUTING | Codex | (optional) execution in progress |
-| EXECUTED | Codex | Iteration finished; metadata only |
-| REVIEW | ChatGPT | (implicit) ChatGPT is inspecting via MCP |
-| DONE | ChatGPT | Success criteria met |
-| BLOCKED | ChatGPT | Cannot proceed; contains reason |
-| ERROR | either | Protocol/infrastructure failure |
-| HANDOFF | Codex | Continuation brief sent to a replacement conversation |
+- the approved plan;
+- workspace audit before each task;
+- bounded task construction;
+- independent review;
+- deciding whether a task is accepted or needs a fix;
+- deciding when a plan item is complete.
 
-There is no `STATE: RESUME`. If Codex restarts mid-task, it reads a **local
-checkpoint** on the session file (`protocolState`, `waitingFor`, goal, issues,
-next step). Those values are not ChatGPT protocol states. ChatGPT still sees
-only the table above. If the original chat is gone, Codex sends HANDOFF
-built from the checkpoint (never from logs).
-
-Local checkpoint values (session only):
+### C2C
 
-| Checkpoint | Meaning |
-| --- | --- |
-| `INIT` | INIT sent; waiting for PLAN |
-| `PLAN_RECEIVED` | PLAN in hand; not finished executing |
-| `EXECUTING` | Codex is applying the current PLAN |
-| `EXECUTED_LOCAL` | Recorded locally; EXECUTED not yet typed |
-| `EXECUTED_SENT` | EXECUTED typed; waiting for review |
-| `DONE` / `BLOCKED` | Terminal; DONE should `--clear-checkpoint` |
-
-Legacy sessions without a checkpoint keep the old loop. The first normal
-iteration after this version writes a checkpoint automatically.
+C2C owns:
 
-Do not re-pair, recreate the connector, or rewrite Project instructions
-just to resume.
-
-## Message format
-
-Every control message starts with `[C2C]` and key-value headers, then sections.
-Keep messages < 1 KB. No diffs, no logs, no file bodies.
-
-### INIT (Codex → ChatGPT)
-
-```
-[C2C]
-STATE: INIT
-TASK_ID: c2c_f81a
-ITERATION: 0
+- run state;
+- plan order;
+- task ids;
+- task state;
+- fix counters;
+- transition validation;
+- continuation delivery;
+- enforcing that no unapproved top-level plan item is created.
 
-GOAL:
-Implement dark mode.
+C2C never interprets review prose to decide whether work is correct.
 
-INSTRUCTION:
-Inspect the connected workspace through Codex with ChatGPT MCP.
-Create an implementation plan for Codex.
-```
+### Codex worker
 
-### PLAN (ChatGPT → Codex)
-
-```
-[C2C]
-STATE: PLAN
-TASK_ID: c2c_f81a
-ITERATION: 1
+A Codex worker owns only one bounded task.
 
-GOAL:
-...
-
-RATIONALE:
-...
-
-ACTIONS:
-1. ...
-2. ...
-3. ...
-
-FILES_LIKELY_INVOLVED:
-...
-
-TESTS:
-...
-
-SUCCESS_CRITERIA:
-...
-```
-
-Plans must be finite, concrete, executable. Not 40-step epics.
+It does not own:
 
-### EXECUTED (Codex → ChatGPT)
-
-```
-[C2C]
-STATE: EXECUTED
-TASK_ID: c2c_f81a
-ITERATION: 1
+- the global plan;
+- queue progression;
+- review;
+- fix policy;
+- finalization;
+- commit or push.
 
-RESULT:
-Execution finished.
+## Commands
 
-CHANGED_FILES:
-4
+Commands are sent from ChatGPT to C2C.
 
-TESTS:
-27 passed
+### start_run
 
-Please independently inspect the workspace and current git diff through MCP.
-If execution_output lists a readable item for this iteration, list then read it.
-If status is restricted, ignore it and review from git_diff.
-```
+Create a run from an already approved finite top-level plan.
 
-Before sending EXECUTED, Codex records the iteration:
-`c2c record --task c2c_f81a --iteration 1 --changed-files ... --tests ... --exit-status ok`
-and, when a test/build/lint/typecheck was run, `--command` plus `--output-file`.
-ChatGPT reads metadata via `execution_summary` / `test_status`. Command output
-is a separate opt-in: `execution_output` (`list` then `read`). Codex nominates
-the log; a **local sanitizer** decides whether ChatGPT may see the body
-(tokens/paths redacted; private keys withheld entirely; size/line caps).
-Restricted items appear in `list` with no body. Old records without output
-stay valid. Never paste logs into the control message.
-
-### DONE / BLOCKED (ChatGPT → Codex)
-
-```
-[C2C]
-STATE: DONE
-TASK_ID: c2c_f81a
-ITERATION: 3
-
-SUMMARY:
-...
-```
-
-```
-[C2C]
-STATE: BLOCKED
-TASK_ID: c2c_f81a
-ITERATION: 3
-
-REASON:
-...
-
-NEEDS:
-...
-```
-
-### HANDOFF (Codex → new ChatGPT conversation)
-
-`c2c session --json` → `conversation.mode` chooses how chats are grouped.
-
-- **long-chat:** one long-lived C2C conversation per workspace. Codex opens a
-  replacement chat only when the user asks, the old chat lags, or the chat was
-  lost.
-- **project:** one ChatGPT Project (collection) per workspace. A new Codex
-  conversation starts a new chat **inside that Project**. The same Codex
-  conversation keeps using its saved chat URL.
-
-Right after the boot prompt, Codex sends a HANDOFF so the new chat can
-continue — a brief, never a data dump (the new chat re-reads code via MCP).
-Project instructions and project-only memory hold durable workspace identity.
-HANDOFF still wins for the current task:
-
-Trust order: connector (current code) > HANDOFF (this task) > Project
-instructions > Project memory.
-
-```
-[C2C]
-STATE: HANDOFF
-TASK_ID: c2c_f81a
-ITERATION: 4
-
-ORIGINAL_GOAL:
-Implement dark mode with a persisted user preference.
-
-PROGRESS:
-- Iter 1-2: theme context + toggle implemented, reviewed OK.
-- Iter 3: persistence added; review found the toggle flashes on load.
-
-CURRENT_STATE:
-EXECUTED (iteration 4 fix applied, not yet reviewed).
-
-KNOWN_ISSUES:
-Flash-on-load fix needs verification in src/theme/ThemeProvider.tsx.
-
-NEXT_EXPECTED_STEP:
-Independently review iteration 4 via git_diff and reply PLAN or DONE.
-```
-
-## Loop limits
-
-`maxIterations` (default 12, configurable in `.c2c.json`). When reached, Codex
-pauses and asks the user whether to continue.
-
-## Boot Prompt
-
-Send once at the start of every new C2C conversation:
-
-```
-You are the planning and review layer of a Codex coding session.
-
-Codex owns execution.
-You own high-level reasoning, planning and review.
-
-You have access to the current local workspace through the
-"Codex with ChatGPT" MCP connector.
-
-Rules:
-
-1. Do not ask Codex to paste files that are available through MCP.
-2. Inspect only the files needed for the task.
-3. Use MCP to inspect current code, git status and diff.
-4. Produce concise executable plans.
-5. Codex will execute your plan using its own harness.
-6. After Codex reports EXECUTED, independently inspect the diff.
-   If execution_output lists a readable item for this iteration, list
-   then read it. If status is restricted, ignore the body and review
-   from git.
-7. Do not assume an implementation succeeded just because Codex says so.
-8. Continue until the implementation satisfies the success criteria.
-9. Avoid unnecessary rewrites.
-10. Return C2C structured control messages.
-11. Be substantive. PLAN and review replies must carry enough signal for
-    Codex to act on: rationale, per-file natural-language suggestions
-    (which file, what to change and why), risks worth checking, and test
-    advice. Never reply with a bare one-liner. Substance over length —
-    but do not generate 40-step epics either.
-12. If you receive a HANDOFF message, this conversation continues an
-    existing task. Trust the handoff brief for history, re-read any code
-    you need through MCP, and resume from NEXT_EXPECTED_STEP.
-13. If this chat sits in a ChatGPT Project, use only the connector named
-    in that Project's instructions. Do not use another workspace's connector.
-```
-
-## Project instructions
-
-New workspaces store durable identity in the ChatGPT Project settings
-(指令), not in every boot prompt. The Skill fills this template once.
-Never put a public or temporary URL in the instructions — only the
-connector **name**.
-
-```
-You are the planning and review layer for one local workspace. Codex executes.
-
-This Project is bound only to:
-- Workspace name: {{workspace_name}}
-- Kind: {{project_type}} ({{languages}} / {{frameworks}})
-- Connector (use this one only): {{connector_name}}
-
-When you call tools, use ONLY that connector. Do not use any other
-Codex with ChatGPT connector. If workspace_info names a different
-workspace, stop. Do not plan. Do not use this Project's memory.
-
-Read code, git, diffs, and any released command output through that
-connector. Never ask anyone to paste file bodies, diffs, or logs. After
-EXECUTED, call execution_output (list, then read) when a readable item
-exists; if status is restricted, review from git instead. Never upload
-the repo into this Project's files or sources.
-
-When facts conflict, trust this order:
-1. Current code from the connector
-2. A HANDOFF in this chat (this task's goal, progress, next step)
-3. These instructions
-4. This Project's memory (durable architecture only; stale memory loses)
-
-This Project's memory is only for this workspace. On HANDOFF, trust the
-brief, re-read code through the connector, and resume at NEXT_EXPECTED_STEP.
-
-Be substantive: why, which file, what to test. No empty one-liners and
-no 40-step epics. Use C2C control messages.
-```
+Input:
+
+- plan items
+- maxFixAttemptsPerTask
+
+Top-level plan items are locked after the run starts.
+
+### start_task
+
+Start one bounded execution task.
+
+Kinds:
+
+- execute
+- fix
+
+Every execute task creates a new root task chain.
+
+Every fix references that root task chain.
+
+Fix limits are counted independently per root task chain.
+
+### submit_review
+
+Submit ChatGPT's independent review result.
+
+Outcomes:
+
+- accepted
+- fix_required
+- blocked
+
+When accepted, ChatGPT also states whether the current top-level
+plan item is complete.
+
+### get_run
+
+Read current run state.
+
+Recovery/debug operation only.
+
+### get_task
+
+Read current task state.
+
+Recovery/debug operation and continuation polling.
+
+### finalize_run
+
+Finalize a run only after every approved top-level plan item is accepted.
+
+The mock implementation performs no git commit or push.
+Real finalization will be implemented separately.
+
+## Events
+
+Events are delivered from C2C to ChatGPT.
+
+### TASK_COMPLETED
+
+The worker finished.
+
+This does NOT mean the task is accepted.
+
+ChatGPT must independently review it.
+
+### TASK_FAILED
+
+Execution failed.
+
+### TASK_BLOCKED
+
+Execution could not continue within the supplied scope.
+
+### RUN_CONTINUE
+
+C2C requests another orchestration step.
+
+NEXT_ACTION is one of:
+
+- EXECUTE
+- FIX
+- FINALIZE
+
+### RUN_BLOCKED
+
+The run cannot automatically continue.
+
+Examples:
+
+- fix limit reached;
+- explicit review block;
+- invalid state transition.
+
+### RUN_FINALIZED
+
+Finalization completed.
+
+ChatGPT may now report DONE.
+
+## Fix budget
+
+`maxFixAttemptsPerTask` applies independently to each root execution task.
+
+Example with limit 2:
+
+P1 task A
+- execute
+- fix 1
+- fix 2
+
+P1 task B
+- execute
+- fix 1
+- fix 2
+
+P2 task A
+- execute
+- fix 1
+- fix 2
+
+All are valid independent chains.
+
+A request for another fix after a task chain has consumed its own
+budget transitions the run to RUN_BLOCKED.
+
+## Plan locking
+
+If a run starts with:
+
+- P1
+- P2
+- P3
+
+ChatGPT may execute several bounded tasks inside P2.
+
+ChatGPT may not create a new top-level P4.
+
+When all approved plan items are complete, the only valid next action
+is FINALIZE.
+
+## Core flow
+
+USER START
+→ start_run
+
+RUN_CONTINUE(EXECUTE)
+→ ChatGPT AUDIT
+→ start_task(execute)
+
+TASK_COMPLETED
+→ ChatGPT REVIEW
+→ submit_review
+
+submit_review(fix_required)
+→ RUN_CONTINUE(FIX)
+→ start_task(fix)
+
+submit_review(accepted, planItemComplete=false)
+→ RUN_CONTINUE(EXECUTE) for the same plan item
+
+submit_review(accepted, planItemComplete=true)
+→ RUN_CONTINUE(EXECUTE) for the next approved plan item
+
+last plan item accepted
+→ RUN_CONTINUE(FINALIZE)
+
+finalize_run
+→ RUN_FINALIZED
+→ DONE
+
+## Safety rules
+
+- TASK_COMPLETED never implies accepted.
+- Only ChatGPT review may accept work.
+- C2C validates state transitions but does not judge code quality.
+- Codex never decides NEXT, FIX, FINALIZE, or DONE.
+- No new top-level plan items after start_run.
+- No automatic loop after RUN_BLOCKED.

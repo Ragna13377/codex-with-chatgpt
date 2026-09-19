@@ -51,7 +51,10 @@ async function authorizeWithPairing(
   authorizeUrl.searchParams.set("state", state);
   authorizeUrl.searchParams.set("code_challenge", challenge);
   authorizeUrl.searchParams.set("code_challenge_method", "S256");
-  authorizeUrl.searchParams.set("scope", "workspace.read workspace.search git.read execution.read offline_access");
+  authorizeUrl.searchParams.set(
+    "scope",
+    "workspace.read workspace.search git.read execution.read codex.execute offline_access"
+  );
 
   const pageResponse = await fetch(authorizeUrl, { redirect: "manual" });
   const html = await pageResponse.text();
@@ -102,10 +105,16 @@ describe("discovery metadata", () => {
 
   it("serves authorization server metadata with PKCE S256", async () => {
     const response = await fetch(`${base}/.well-known/oauth-authorization-server`);
-    const body = (await response.json()) as Record<string, unknown>;
+    const body = (await response.json()) as {
+      code_challenge_methods_supported?: string[];
+      grant_types_supported?: string[];
+      registration_endpoint?: string;
+      scopes_supported?: string[];
+    };
     expect(body.code_challenge_methods_supported).toEqual(["S256"]);
     expect(body.grant_types_supported).toEqual(["authorization_code", "refresh_token"]);
     expect(body.registration_endpoint).toContain("/oauth/register");
+    expect(body.scopes_supported).toContain("codex.execute");
   });
 });
 
