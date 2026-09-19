@@ -58,7 +58,13 @@ beforeAll(async () => {
   });
   const tokens = bridge.authStore.issueTokens({
     clientId: "it-client",
-    scopes: ["workspace.read", "workspace.search", "git.read", "execution.read"],
+    scopes: [
+      "workspace.read",
+      "workspace.search",
+      "git.read",
+      "execution.read",
+      "codex.execute",
+    ],
   });
   accessToken = tokens.accessToken;
 
@@ -76,18 +82,24 @@ afterAll(async () => {
 });
 
 describe("MCP tools over Streamable HTTP", () => {
-  it("lists all ten tools including the effectful Codex task executor", async () => {
+  it(  "lists all sixteen MCP tools", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
     expect(names).toEqual([
       "execute_codex_task",
       "execution_output",
       "execution_summary",
+      "finalize_run",
+      "get_run",
+      "get_task",
       "git_diff",
       "git_status",
       "list_directory",
       "read_file",
       "search_workspace",
+      "start_run",
+      "start_task",
+      "submit_review",
       "test_status",
       "workspace_info",
     ]);
@@ -105,6 +117,69 @@ describe("MCP tools over Streamable HTTP", () => {
     expectToolOutputSchema(tools, "test_status", ["available", "tests", "outputAvailable", "outputId"]);
     expectToolOutputSchema(tools, "execution_summary", ["records"]);
     expectToolOutputSchema(tools, "execution_output", ["action", "items", "text"]);
+    expectToolOutputSchema(
+      tools,
+      "start_run",
+      [
+        "runId",
+        "status",
+        "items",
+        "currentPlanItemId",
+        "nextAction",
+      ]
+    );
+
+    expectToolOutputSchema(
+      tools,
+      "start_task",
+      [
+        "taskId",
+        "rootTaskId",
+        "runId",
+        "status",
+      ]
+    );
+
+    expectToolOutputSchema(
+      tools,
+      "get_run",
+      [
+        "runId",
+        "status",
+        "items",
+      ]
+    );
+
+    expectToolOutputSchema(
+      tools,
+      "get_task",
+      [
+        "taskId",
+        "status",
+        "result",
+      ]
+    );
+
+    expectToolOutputSchema(
+      tools,
+      "submit_review",
+      [
+        "runId",
+        "event",
+        "followupPrompt",
+      ]
+    );
+
+    expectToolOutputSchema(
+      tools,
+      "finalize_run",
+      [
+        "runId",
+        "status",
+        "event",
+      ]
+    );
+
     expectToolOutputSchema(
       tools,
       "execute_codex_task",
@@ -326,23 +401,91 @@ describe("MCP tools over Streamable HTTP", () => {
   });
 
   it("enforces scopes per tool", async () => {
-    const limited = bridge.authStore.issueTokens({ clientId: "limited", scopes: ["workspace.read"] });
-    const limitedClient = new Client({ name: "limited", version: "1.0.0" });
-    const transport = new StreamableHTTPClientTransport(new URL(`${bridge.localBaseUrl()}/mcp`), {
-      requestInit: { headers: { authorization: `Bearer ${limited.accessToken}` } },
+    const limited = bridge.authStore.issueTokens({
+      clientId: "limited",
+      scopes: ["workspace.read"],
     });
+
+    const limitedClient = new Client({
+      name: "limited",
+      version: "1.0.0",
+    });
+
+    const transport =
+      new StreamableHTTPClientTransport(
+        new URL(`${bridge.localBaseUrl()}/mcp`),
+        {
+          requestInit: {
+            headers: {
+              authorization:
+                `Bearer ${limited.accessToken}`,
+            },
+          },
+        }
+      );
+
     await limitedClient.connect(transport);
-    const denied = await limitedClient.callTool({ name: "git_diff", arguments: {} });
+
+    const denied =
+      await limitedClient.callTool({
+        name: "git_diff",
+        arguments: {},
+      });
+
     expect(denied.isError).toBe(true);
-    expect(textOf(denied)).toContain("INSUFFICIENT_SCOPE");
-    const outputDenied = await limitedClient.callTool({
-      name: "execution_output",
-      arguments: { action: "list" },
-    });
+    expect(textOf(denied)).toContain(
+      "INSUFFICIENT_SCOPE"
+    );
+
+    const outputDenied =
+      await limitedClient.callTool({
+        name: "execution_output",
+        arguments: {
+          action: "list",
+        },
+      });
+
     expect(outputDenied.isError).toBe(true);
-    expect(textOf(outputDenied)).toContain("INSUFFICIENT_SCOPE");
-    const allowed = await limitedClient.callTool({ name: "read_file", arguments: { path: "hello.txt" } });
-    expect(allowed.isError ?? false).toBe(false);
+    expect(textOf(outputDenied)).toContain(
+      "INSUFFICIENT_SCOPE"
+    );
+
+    // ВОТ СЮДА ДОБАВЛЯЕМ
+    const runDenied =
+      await limitedClient.callTool({
+        name: "start_run",
+        arguments: {
+          items: [
+            {
+              id: "P1",
+              summary: "Test item",
+            },
+          ],
+          max_fix_attempts_per_task: 2,
+        },
+      });
+
+    expect(runDenied.isError).toBe(true);
+
+    expect(
+      textOf(runDenied)
+    ).toContain(
+      "INSUFFICIENT_SCOPE"
+    );
+
+    // А ЭТОТ СТАРЫЙ allowed ОСТАЁТСЯ ПОСЛЕ НЕГО
+    const allowed =
+      await limitedClient.callTool({
+        name: "read_file",
+        arguments: {
+          path: "hello.txt",
+        },
+      });
+
+    expect(
+      allowed.isError ?? false
+    ).toBe(false);
+
     await limitedClient.close();
   });
 
